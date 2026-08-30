@@ -551,6 +551,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
     inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
+    inst->synth_sysex_in = 0;                  /* Default: no SysEx forwarded */
     {
         char json_path[MAX_PATH_LEN];
         snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
@@ -593,6 +594,20 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                                 inst->synth_consumes_line_input = 1;
                                 v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
                             }
+                        }
+                    }
+                    /* Parse capabilities.sysex_in — does this synth want
+                     * reassembled cable-2 SysEx? A hardware editor holding an
+                     * external instrument does; nothing else should have to
+                     * think about it, which is why it is opt-in. Boolean in
+                     * JSON, so json_get_bool_in_section and not json_get_int
+                     * (atoi("true") == 0). */
+                    {
+                        int sysex_in = 0;
+                        if (json_get_bool_in_section(json, "capabilities", "sysex_in",
+                                                     &sysex_in) == 0 && sysex_in) {
+                            inst->synth_sysex_in = 1;
+                            v2_chain_log(inst, "Synth opted in to cable-2 SysEx");
                         }
                     }
                     free(json);

@@ -700,6 +700,37 @@ static void pre_delay_flush(chain_instance_t *inst) {
 void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst || len < 1) return;
+    /*
+     * SYSEX: the opt-in gate, and it comes first.
+     *
+     * shadow_dispatch_cable2_sysex_slots broadcasts a reassembled message to
+     * every active slot, because SysEx carries no channel to route on. This is
+     * where a slot decides the message is not its business.
+     *
+     * RETURNS EITHER WAY. Everything below this point reads msg[0] as a
+     * channel-voice status byte — the clock tracker, the LFO retrigger, the
+     * echo filter, the knob CC mappings, the MIDI FX chain. None of that means
+     * anything for an F0 message, and several would misread it: 0xF0 & 0xF0 is
+     * 0xF0, which is not a voice type, but msg[1] and msg[2] are manufacturer
+     * and address bytes that a knob-CC or note handler would happily treat as
+     * a CC number and value. So SysEx is delivered to the synth or dropped,
+     * and never falls through.
+     *
+     * The default is DROP. No sub-plugin has ever been handed a message that
+     * was not 1 or 3 bytes long — the chain host forwards a hardcoded three —
+     * so passing a 400-byte dump to a module that never asked for one would be
+     * testing its bounds handling on the SPI callback, in the field. See the
+     * `reserved[8]` note in plugin_api_v1.h for what the last silent widening
+     * of this contract cost.
+     */
+    if (msg[0] == 0xF0) {
+        if (inst->synth_sysex_in && inst->synth_plugin_v2 &&
+            inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+            inst->synth_plugin_v2->on_midi(inst->synth_instance, msg, len, source);
+        }
+        return;
+    }
+
     chain_update_clock_runtime(msg, len);
 
     /* Reset synced LFO phases on MIDI Start (0xFA) */

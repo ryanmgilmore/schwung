@@ -132,6 +132,13 @@ void shadow_dispatch_direct_external_midi(void);
  * so that Schwung instruments respond to external MIDI by channel. */
 void shadow_dispatch_cable2_channeled_slots(void);
 
+/* Dispatch reassembled cable-2 (USB-A external MIDI) SysEx to chain slots.
+ * SysEx carries no channel, so this broadcasts to every active slot and the
+ * module decides whether the message is its own by reading the manufacturer
+ * ID.  A slot's synth receives nothing unless it declared
+ * capabilities.sysex_in — see v2_on_midi in modules/chain/dsp/chain_midi.c. */
+void shadow_dispatch_cable2_sysex_slots(void);
+
 /* External cable-2 dispatch ring.  Used by shadow_inprocess_process_midi to
  * detect MIDI_OUT echoes of external cable-2 events that were already
  * dispatched to chain slots via the MIDI_IN path.  The MIDI_IN scan alone is

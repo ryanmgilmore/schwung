@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include "shadow_midi.h"
 #include "shadow_midi_filter.h"   /* SHADOW_MIDI_IN_* geometry */
+#include "sysex_assembler.h"      /* cable-2 SysEx reassembly for chain slots */
 #include "shadow_midi_inject_writer.h"
 #include "shadow_overtake_midi.h"
 #include "shadow_chain_mgmt.h"
@@ -104,6 +105,11 @@ static event_dedup_entry_t g_thru_dedup[EVENT_DEDUP_RING_SIZE];
 static int g_thru_dedup_head = 0;
 static event_dedup_entry_t g_ch_dedup[EVENT_DEDUP_RING_SIZE];
 static int g_ch_dedup_head = 0;
+/* Its own ring, not shared with the voice dispatchers: a SysEx packet and a
+ * voice event can occupy the same MIDI_IN slot across frames, and one
+ * consuming the other's dedup entry would drop a real packet out of a dump. */
+static event_dedup_entry_t g_sysex_dedup[EVENT_DEDUP_RING_SIZE];
+static int g_sysex_dedup_head = 0;
 
 /* Returns 1 if this 8-byte event was recently dispatched and should be
  * skipped, 0 otherwise.  Records the event in the ring when it passes.
@@ -912,6 +918,97 @@ void shadow_dispatch_direct_external_midi(void)
             uint8_t msg[3] = { status, d1, d2 };
             if (host_master_fx_forward_midi)
                 host_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+        }
+    }
+}
+
+/*
+ * Dispatch reassembled cable-2 SysEx to chain slots.
+ *
+ * A chain slot has never been able to hear a device answer. Both cable-2
+ * dispatchers gate on `cin < 0x08 || cin > 0x0E`, and SysEx arrives as CIN
+ * 0x04-0x07, so it was dropped before the channel filter was ever reached. A
+ * slot holding an external instrument could send to it (since chain knob CC
+ * out wired up midi_send_external) but could not read the reply — no identity,
+ * no patch name, no following the hardware when its patch changes underneath.
+ *
+ * BROADCAST, BECAUSE SYSEX HAS NO CHANNEL. Every other cable-2 dispatch keys
+ * on the slot's receive channel; a SysEx message carries nothing to key on.
+ * The manufacturer ID is the only discriminator and it lives inside the
+ * message, so the module reads it — the host does not learn what a Roland
+ * address is. That is also how it already works for a tool module receiving
+ * the raw cable-2 stream, and how shadow_dispatch_cable2_channeled_slots
+ * already treats a channel-matched broadcast: the host routes, the module
+ * decides.
+ *
+ * NOTHING RECEIVES THIS UNLESS IT ASKED. The slot's synth opts in with
+ * capabilities.sysex_in in its module.json; v2_on_midi drops a SysEx message
+ * on the floor otherwise. That gate is not politeness — no sub-plugin has ever
+ * been handed a message that was not 1 or 3 bytes (the chain host forwards a
+ * hardcoded three), so a module's handling of a long one has never been
+ * exercised. See the note on the same subject in plugin_api_v1.h, and the
+ * `reserved[8]` tail there for what a silent capability change costs.
+ *
+ * A SEPARATE SCAN, deliberately. Folding this into the channeled dispatcher
+ * would save a walk of MIDI_IN, but that function is `for each voice event,
+ * find its slots` and this is `assemble a stream, then broadcast` — one loop
+ * doing both would be harder to read than the walk is expensive, and the file
+ * already runs two scans for two purposes.
+ */
+void shadow_dispatch_cable2_sysex_slots(void)
+{
+    if (!*host_shadow_inprocess_ready || !*host_global_mmap_addr) return;
+
+    const plugin_api_v2_t *pv2 = *host_plugin_v2;
+    if (!pv2 || !pv2->on_midi) return;
+
+    /*
+     * ONE ASSEMBLER FOR THE PORT, not one per slot. There is a single byte
+     * stream and whose message it is cannot be known until it has been read,
+     * so it is assembled once and then handed out. Static because it must
+     * survive across SPI frames: a dump spans many.
+     */
+    static sysex_assembler_t asm_state;
+
+    uint8_t *in_src = *host_global_mmap_addr + MIDI_IN_OFFSET;
+
+    /* 8-byte stride (USB-MIDI + timestamp); don't break on zero. */
+    for (int i = 0; i + 8 <= SHADOW_MIDI_IN_BYTES; i += 8) {
+        uint8_t header = in_src[i];
+        if (header == 0) continue;
+
+        uint8_t cable = (header >> 4) & 0x0F;
+        if (cable != 0x02) continue;   /* only cable-2 (USB-A external MIDI) */
+
+        uint8_t cin = header & 0x0F;
+        if (!sysex_cin_is_sysex(cin)) continue;
+
+        /*
+         * Dedup on the full 8-byte slot, which INCLUDES the timestamp — the
+         * same reason the voice dispatchers do. MIDI_IN is never cleared
+         * wholesale, so a consumed slot keeps its bytes and is re-scanned every
+         * frame; without this a dump would be fed to the assembler once per
+         * frame until Move happened to overwrite it.
+         *
+         * The timestamp is what makes this safe for SysEx specifically. Two
+         * packets of a dump can legitimately carry identical payload bytes
+         * (a run of zeros in a patch), and a content-only key would drop the
+         * second and corrupt the message.
+         */
+        if (event_dedup_check_and_record(g_sysex_dedup, &g_sysex_dedup_head,
+                                         &in_src[i]))
+            continue;
+
+        int len = sysex_assembler_feed(&asm_state, cin,
+                                       in_src[i + 1], in_src[i + 2],
+                                       in_src[i + 3]);
+        if (len <= 0) continue;
+
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+            if (!host_chain_slots[s].active || !host_chain_slots[s].instance)
+                continue;
+            pv2->on_midi(host_chain_slots[s].instance, asm_state.buf, len,
+                         MOVE_MIDI_SOURCE_EXTERNAL);
         }
     }
 }
