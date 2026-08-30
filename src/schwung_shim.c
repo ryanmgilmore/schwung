@@ -5638,6 +5638,11 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     if (shadow_control &&
         (shadow_control->overtake_mode == 0 || shadow_control->suspend_overtake)) {
         shadow_dispatch_cable2_channeled_slots();
+        /* Same regime, same reason: a slot holding an external instrument
+         * needs its device's replies when no tool is in front of it. In
+         * overtake mode the tool already receives the whole cable-2 stream,
+         * SysEx included, so dispatching here as well would deliver it twice. */
+        shadow_dispatch_cable2_sysex_slots();
     }
 
     TIME_SECTION_START();

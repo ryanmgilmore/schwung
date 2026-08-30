@@ -47,6 +47,54 @@ Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `def
 
 Chain host (`modules/chain/dsp/chain_host.c` — lifecycle/set+get_param/render; helpers split into `chain_{json,params,mod,midi,patch,reorder}.c`, shared decls in `chain_internal.h`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.
 
+### SysEx into a slot: opt-in, broadcast, and the module decides
+
+A chain slot could always be *sent to* — `midi_send_external` was wired up for
+sub-plugins when chain knob CC out landed — but it could never hear a reply.
+Both cable-2 dispatchers in `shadow_midi.c` gate on `cin < 0x08 || cin > 0x0E`,
+and SysEx arrives as CIN `0x04`-`0x07`, so it was dropped before the channel
+filter was reached. A slot holding an external instrument had no way to read an
+identity reply or a patch name, or to follow the hardware when its patch changed.
+
+`shadow_dispatch_cable2_sysex_slots()` closes that half. Three properties:
+
+**It is BROADCAST, because SysEx has no channel.** Every other cable-2 dispatch
+keys on the slot's receive channel; a SysEx message carries nothing to key on.
+The manufacturer ID is the only discriminator and it lives inside the message,
+at a different offset with different semantics per manufacturer — so the module
+reads it, and the host never learns what a Roland address is. This is the same
+division of labour a tool module already has with the raw cable-2 stream.
+
+**Nothing receives it unless it asked.** The slot's synth declares
+`capabilities.sysex_in` in its `module.json`; `v2_on_midi` drops SysEx
+otherwise, and returns rather than falling through — everything below that point
+reads `msg[0]` as a channel-voice status byte, and `msg[1]`/`msg[2]` of a SysEx
+message are manufacturer and address bytes the knob-CC handler would read as a
+CC number and value. The opt-in is not politeness: no sub-plugin has ever been
+handed a message that was not 1 or 3 bytes long, so a module's handling of a
+long one has never been exercised. See the `reserved[8]` note in
+`plugin_api_v1.h` for what the last silent widening of this contract cost.
+
+**Reassembly is per-PORT and happens before routing.** `sysex_assembler.h` is
+the one assembler; the four slots cannot each reassemble independently because
+there is a single byte stream and whose message it is cannot be known until it
+has been read. It is pure — no allocation, no I/O, no locks, no clock — because
+it runs on the SPI callback, and it is host-testable
+(`tests/host/test_sysex_assembler.c`).
+
+**Two limits, both deliberate.** A message longer than `SYSEX_ASSEMBLER_MAX`
+(512 bytes) is discarded WHOLE and counted, never truncated and delivered — a
+half patch dump that looks complete is worse than none, because a receiver
+cannot tell it was cut. And two devices dumping simultaneously interleave in the
+stream with no per-device tag to separate them; an `F0` arriving mid-message
+abandons the one in progress rather than splicing two into a plausible-looking
+third. Note that a MIDI merge box is the *safer* topology here, not the more
+dangerous one: a competent merger holds one message until `F7` before letting
+the other through, precisely because interleaved SysEx breaks receivers.
+
+Runs only when no tool module is active. In overtake mode the tool already
+receives the whole cable-2 stream, SysEx included.
+
 ### Chain shape edits are a PERMUTATION, never a reload
 
 Adding, removing or reordering a position used to be expressed as a run of

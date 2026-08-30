@@ -86,6 +86,7 @@ for keys anywhere in `module.json`).
 | `default_forward_channel` | Default Forward Channel for shadow slots loading this module. `-2` = passthrough (preserve original MIDI channel, required for MPE), `1`–`16` = remap to a specific channel. |
 | `button_passthrough` | Array of CC numbers the module wants Move to keep handling (e.g. `[85]` to let Play reach Move while the module is active). |
 | `suspend_keeps_js` | Tool/overtake modules: pressing Back suspends the UI but the DSP keeps ticking; full exit requires Shift+Back. Useful for sequencers that should keep playing while you browse Move. |
+| `sysex_in` | Chain-slot sound generators: forward reassembled cable-2 (USB-A) SysEx to this module's `on_midi`. **Off by default, and the default matters** — no sub-plugin has ever been handed a message that was not 1 or 3 bytes, so `on_midi` must be written for variable length before declaring this. SysEx carries no channel, so every opted-in slot receives every message and the module identifies its own by manufacturer ID. Read by `chain_host.c` in `v2_load_synth`. |
 | `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
 
 > **Where these are read.** `src/host/module_manager.c` (used by the

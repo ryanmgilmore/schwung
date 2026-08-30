@@ -252,6 +252,11 @@ typedef struct chain_instance {
     char current_synth_module[MAX_NAME_LEN];
     int synth_default_forward_channel;  /* -1 = no default, 0-15 = channel */
     int synth_consumes_line_input;      /* 1 = pulls line-in/mic (feedback risk on boot) */
+    /* 1 = synth declared capabilities.sysex_in in its module.json, so
+     * reassembled cable-2 SysEx is forwarded to it. Default 0: no sub-plugin
+     * has ever been handed a message that was not 1 or 3 bytes, so this is
+     * opt-in rather than a silent widening of on_midi's contract. */
+    int synth_sysex_in;
 
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];

@@ -409,6 +409,12 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   rebuilds every position behind it, losing arp phase and reverb tails.
 - Per-position arrays split into VALUE and **OWNED-BUFFER**. Zeroing an owned
   pointer instead of rotating it is a SIGSEGV on the SPI callback.
+- **A slot hears SysEx only if its synth declared `capabilities.sysex_in`.**
+  Cable-2 SysEx (CIN 0x04-0x07) was dropped by both dispatchers before the
+  channel filter; it is reassembled per PORT and broadcast, because SysEx has no
+  channel to route on, and the module identifies its own by manufacturer ID.
+  Opt-in because no sub-plugin has ever been handed a message that was not 1 or
+  3 bytes.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
